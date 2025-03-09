@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DeFAI YieldMax Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/web3@1.7.4/dist/web3.min.js"></script>
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            background-color: #1a1a1a;
+            color: #ffffff;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #2a2a2a;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+        }
+        h1 {
+            text-align: center;
+            color: #00cc99;
+            margin-bottom: 20px;
+        }
+        .stats, .actions, .allocations {
+            margin-bottom: 30px;
+        }
+        .stats p, .actions input, .actions button {
+            margin: 10px 0;
+        }
+        input[type="number"] {
+            padding: 10px;
+            border: none;
+            border-radius: 5px;
+            background-color: #3a3a3a;
+            color: #ffffff;
+            width: 150px;
+        }
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            background-color: #00cc99;
+            color: #ffffff;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #009977;
+        }
+        .allocations ul {
+            list-style: none;
+            padding: 0;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+        .allocations li {
+            background-color: #3a3a3a;
+            padding: 15px;
+            border-radius: 5px;
+            text-align: center;
+        }
+        .highlight {
+            color: #00cc99;
+            font-weight: bold;
+        }
+        .error {
+            color: #ff5555;
+            text-align: center;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>DeFAI YieldMax Dashboard</h1>
+        
+        <div class="stats">
+            <p>Your Balance: <span id="balance" class="highlight">0</span> DFYM</p>
+            <p>Total Assets: <span id="totalAssets" class="highlight">0</span> mUSDC</p>
+            <p>Earned Rewards: <span id="earnedRewards" class="highlight">0</span> mUSDC</p>
+            <button onclick="updateDashboard()">Refresh Data</button>
+        </div>
+
+        <div class="actions">
+            <input id="amount" type="number" placeholder="Amount (mUSDC)" min="0" step="0.000001">
+            <div>
+                <button onclick="deposit()">Deposit</button>
+                <button onclick="withdraw()">Withdraw All</button>
+                <button onclick="harvest()">Harvest Rewards</button>
+            </div>
+            <p id="error" class="error"></p>
+        </div>
+
+        <div class="allocations">
+            <h2>Pool Allocations</h2>
+            <ul id="allocations"></ul>
+        </div>
+    </div>
+
+    <script>
+        const web3 = new Web3(window.ethereum);
+        const contractAddress = "DEPLOYED_DEFAI_YIELDMAX_ADDRESS"; // Replace with actual address
+        const usdcAddress = "DEPLOYED_MOCKUSDC_ADDRESS"; // Replace with actual address
+        const abi = [/* Paste DeFAI_YieldMax ABI from Remix */];
+        const usdcAbi = [/* Paste MockUSDC ABI */];
+        const contract = new web3.eth.Contract(abi, contractAddress);
+        const usdc = new web3.eth.Contract(usdcAbi, usdcAddress);
+        let accounts;
+
+        async function init() {
+            if (!window.ethereum) {
+                showError("Please install MetaMask!");
+                return;
+            }
+            accounts = await ethereum.request({ method: 'eth_requestAccounts' });
+            updateDashboard();
+            setInterval(updateDashboard, 10000); // Auto-refresh every 10 seconds
+        }
+
+        async function updateDashboard() {
+            try {
+                const balance = await contract.methods.balanceOf(accounts[0]).call();
+                const totalAssets = await contract.methods._totalAssets().call();
+                const poolRewards = await Promise.all(
+                    Array(15).fill().map(async (_, i) => {
+                        const pool = await contract.methods.pools(i).call();
+                        const dummyPool = new web3.eth.Contract([
+                            {"name": "accumulatedReward", "type": "function", "stateMutability": "view", "inputs": [{"name": "user", "type": "address"}], "outputs": [{"name": "", "type": "uint256"}]}
+                        ], pool);
+                        return await dummyPool.methods.accumulatedReward(contractAddress).call();
+                    })
+                );
+                const earnedRewards = poolRewards.reduce((sum, reward) => sum + Number(reward), 0);
+
+                document.getElementById('balance').innerText = (balance / 1e6).toFixed(6);
+                document.getElementById('totalAssets').innerText = (totalAssets / 1e6).toFixed(6);
+                document.getElementById('earnedRewards').innerText = (earnedRewards / 1e6).toFixed(6);
+
+                const allocList = document.getElementById('allocations');
+                allocList.innerHTML = '';
+                for (let i = 0; i < 15; i++) {
+                    const pool = await contract.methods.pools(i).call();
+                    const percent = await contract.methods.allocationPercent(pool).call();
+                    const dummyPool = new web3.eth.Contract([
+                        {"name": "apy", "type": "function", "stateMutability": "view", "inputs": [], "outputs": [{"name": "", "type": "uint256"}]},
+                        {"name": "staked", "type": "function", "stateMutability": "view", "inputs": [{"name": "user", "type": "address"}], "outputs": [{"name": "", "type": "uint256"}]}
+                    ], pool);
+                    const apy = await dummyPool.methods.apy().call();
+                    const staked = await dummyPool.methods.staked(contractAddress).call();
+
+                    const li = document.createElement('li');
+                    li.innerHTML = `
+                        Pool ${i + 1}<br>
+                        Allocation: <span class="highlight">${(percent / 100).toFixed(2)}%</span><br>
+                        APY: ${(apy / 100).toFixed(2)}%<br>
+                        Staked: ${(staked / 1e6).toFixed(6)} mUSDC
+                    `;
+                    allocList.appendChild(li);
+                }
+                clearError();
+            } catch (err) {
+                showError("Error updating dashboard: " + err.message);
+            }
+        }
+
+        async function deposit() {
+            try {
+                const amount = Math.floor(document.getElementById('amount').value * 1e6);
+                if (amount <= 0) throw new Error("Amount must be greater than 0");
+                await usdc.methods.approve(contractAddress, amount).send({ from: accounts[0] });
+                await contract.methods.deposit(amount).send({ from: accounts[0] });
+                updateDashboard();
+            } catch (err) {
+                showError("Deposit failed: " + err.message);
+            }
+        }
+
+        async function withdraw() {
+            try {
+                const balance = await contract.methods.balanceOf(accounts[0]).call();
+                if (balance == 0) throw new Error("No balance to withdraw");
+                await contract.methods.withdraw(balance).send({ from: accounts[0] });
+                updateDashboard();
+            } catch (err) {
+                showError("Withdraw failed: " + err.message);
+            }
+        }
+
+        async function harvest() {
+            try {
+                await contract.methods.harvest().send({ from: accounts[0] });
+                updateDashboard();
+            } catch (err) {
+                showError("Harvest failed: " + err.message);
+            }
+        }
+
+        function showError(message) {
+            document.getElementById('error').innerText = message;
+        }
+
+        function clearError() {
+            document.getElementById('error').innerText = '';
+        }
+
+        window.addEventListener('load', () => {
+            ethereum ? ethereum.enable().then(init) : showError("MetaMask not detected");
+        });
+    </script>
+</body>
+</html>
